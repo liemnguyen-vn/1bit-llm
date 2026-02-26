@@ -67,62 +67,247 @@ Modern GPUs compute faster than they can read data. LLM inference is **memory-bo
 - **71× less energy** in matrix multiply
 `;
 
-const MOD_02_CONTENT = `## The Transformer: Where BitNet Lives
+const MOD_02A_CONTENT = `## The Attention Mechanism: Core Innovation of the Transformer
 
-Every modern LLM is built on the Transformer architecture. Understanding it is essential because BitNet modifies specific parts of it.
+Every modern LLM is built on the Transformer architecture. Understanding attention is essential because BitNet modifies the weight matrices at the heart of this mechanism.
 
-## Attention Mechanism
+## Why Attention? The Limits of Fixed-Size Representations
 
-The key innovation: allowing every token to look at every other token.
+Before Transformers, **RNNs** processed sequences one token at a time, compressing everything into a fixed-size hidden state. This created a **bottleneck**: by the time the model reached the end of a long sentence, early information was often lost.
+
+**Attention solves this** by letting every token directly look at every other token — no bottleneck, no forgetting.
+
+## The Library Search Analogy
+
+Think of attention like searching a library:
+
+- **Q (Query):** "What am I looking for?" — your search request
+- **K (Key):** "What do I contain?" — the labels on each book
+- **V (Value):** "What information do I provide?" — the actual content of each book
+
+You compare your Query against all Keys to find the most relevant books, then read their Values.
+
+## Scaled Dot-Product Attention
+
+The mathematical formula:
 
 \`\`\`
 Attention(Q, K, V) = softmax(Q × K^T / √d_k) × V
 \`\`\`
 
-- **Q** (Query): "What am I looking for?"
-- **K** (Key): "What do I contain?"
-- **V** (Value): "What information do I provide?"
+**Step by step with 3 tokens (d_k = 2):**
 
-## Self-Attention with Learned Projections
+1. **Q × K^T** — Compute raw similarity scores between all token pairs
+2. **/ √d_k** — Scale down to prevent dot products from growing too large (which would make softmax produce near-one-hot outputs, killing gradients)
+3. **softmax** — Convert to probabilities (each row sums to 1)
+4. **× V** — Weight the value vectors by these attention probabilities
 
-Q, K, V come from the same input, projected through **learned weight matrices**:
+### Worked Example
+
+\`\`\`
+Q = [[1,0],     K = [[1,1],     V = [[1,0,0],
+     [0,1],          [0,1],          [0,1,0],
+     [1,1]]          [1,0]]          [0,0,1]]
+
+Q × K^T = [[1,0,1],    ÷ √2 = [[0.71, 0.00, 0.71],
+            [1,1,0],             [0.71, 0.71, 0.00],
+            [2,1,1]]             [1.41, 0.71, 0.71]]
+
+softmax → [[0.47, 0.21, 0.32],   × V → context-aware outputs
+            [0.39, 0.39, 0.22],
+            [0.50, 0.27, 0.23]]
+\`\`\`
+
+Each output row is a **weighted blend** of all value vectors — the weights reflect relevance.
+
+## Self-Attention: Learned Projections
+
+In **self-attention**, Q, K, and V all come from the same input sequence, projected through **learned weight matrices**:
 
 \`\`\`python
-Q = x @ W_q    # These W_q, W_k, W_v matrices
-K = x @ W_k    # are exactly what BitNet
-V = x @ W_v    # quantizes to {-1, 0, 1}
+Q = x @ W_q    # W_q: (d_model × d_k)
+K = x @ W_k    # W_k: (d_model × d_k)
+V = x @ W_v    # W_v: (d_model × d_v)
 \`\`\`
 
-## Multi-Head Attention
+**Why three separate matrices?** Each projection learns a different "view" of the data:
+- **W_q** learns what each token should search for
+- **W_k** learns how each token should advertise itself
+- **W_v** learns what information each token should contribute
 
-Multiple attention "heads" attend to different aspects of the input. BitNet 2B4T uses 20 heads with 5 KV heads (Grouped Query Attention).
+## Connection to BitNet
 
-## Feed-Forward Network
+These W_q, W_k, W_v matrices are **exactly what BitNet quantizes to {-1, 0, 1}**. They are \`nn.Linear\` layers — the primary target of BitNet's ternary quantization. Despite using only three values per weight, the model learns effective projections.
+`;
 
-After attention, each position passes through an FFN:
+const MOD_02B_CONTENT = `## Multi-Head Attention & Feed-Forward Networks
+
+With single-head attention understood, we now scale up to **multiple heads** and add the second crucial component of each Transformer block: the **feed-forward network**.
+
+## Why Multiple Heads?
+
+A single attention head can only focus on one type of relationship at a time. Multiple heads let the model simultaneously attend to **different aspects**:
+
+- **Head 1** might capture **syntactic** relationships (subject-verb)
+- **Head 2** might track **coreference** (pronoun-antecedent)
+- **Head 3** might learn **semantic** similarity
+- **Head 4** might encode **positional** patterns
+
+## How Multi-Head Attention Works
+
 \`\`\`
-FFN(x) = W2 × SquaredReLU(W1 × x)
+1. Split: Project input into h separate (Q, K, V) triples
+2. Attend: Run scaled dot-product attention on each head in parallel
+3. Concat: Concatenate all head outputs
+4. Project: Multiply by W_o to mix head information
+
+MultiHead(x) = Concat(head₁, ..., headₕ) × W_o
+where headᵢ = Attention(x·Wᵢ_q, x·Wᵢ_k, x·Wᵢ_v)
 \`\`\`
 
-BitNet uses **Squared ReLU** (\`ReLU(x)²\`) which produces sparser activations.
+Each head operates on a **smaller dimension** (d_model / h), so the total computation is similar to a single full-dimension head.
 
-## The Full Transformer Block
+## Grouped-Query Attention (GQA)
+
+Standard multi-head attention creates separate K, V projections per head — expensive in memory.
+
+**GQA** shares K, V projections across groups of Q heads:
+
+| Variant | Q heads | KV heads | KV sharing |
+|---------|---------|----------|------------|
+| Multi-Head (MHA) | 20 | 20 | None |
+| Multi-Query (MQA) | 20 | 1 | All share |
+| **Grouped (GQA)** | **20** | **5** | **4 Q per KV** |
+
+**BitNet 2B4T uses GQA:** 20 query heads sharing 5 KV heads → **50% fewer attention parameters** with minimal quality loss. This is especially valuable when parameters are ternary.
+
+## The Feed-Forward Network (FFN)
+
+After attention, each token independently passes through a two-layer FFN:
 
 \`\`\`
-x = x + Attention(RMSNorm(x))    ← residual + pre-norm
-x = x + FFN(RMSNorm(x))          ← residual + pre-norm
+FFN(x) = W2 × activation(W1 × x)
 \`\`\`
 
-## Where Parameters Live
+### The Expand-Activate-Project Pipeline
 
-~95% of LLM parameters are in \`nn.Linear\` layers. BitNet replaces these with \`BitLinear\`:
+1. **W1 (expand):** Project from d_model to a larger intermediate size (typically 2.7×)
+   - BitNet 2B4T: 2560 → 6912
+2. **Activation:** Apply non-linearity
+3. **W2 (project):** Compress back to d_model
+   - BitNet 2B4T: 6912 → 2560
 
-| Component | Standard | BitNet |
-|-----------|----------|--------|
-| W_q, W_k, W_v, W_o | FP16 | **Ternary {-1,0,1}** |
-| FFN w1, w2 | FP16 | **Ternary {-1,0,1}** |
-| Embeddings | FP16 | FP16 (kept) |
-| RMSNorm | FP32 | FP32 (kept) |
+This "bottleneck" design lets the model work in a richer space temporarily, then compress what it learned.
+
+## Activation Function Evolution
+
+| Function | Formula | Used By |
+|----------|---------|---------|
+| ReLU | max(0, x) | Original Transformers |
+| GELU | x·Φ(x) | GPT, BERT |
+| SwiGLU | swish(xW₁) ⊙ (xV) | LLaMA |
+| **Squared ReLU** | **ReLU(x)²** | **BitNet** |
+
+### Why Squared ReLU for BitNet?
+
+\`ReLU(x)² = max(0, x)²\`
+
+- **Sparser outputs:** Squaring makes small positive values even smaller → more effective zeros
+- **Sparsity complements ternary weights:** When activations are sparse AND weights are ternary, even more computations can be skipped
+- **Simpler than SwiGLU:** No gating mechanism needed, works well with quantized weights
+`;
+
+const MOD_02C_CONTENT = `## The Complete Transformer Block
+
+Now we assemble attention and FFN into a complete decoder block, adding the "glue" components: normalization and residual connections.
+
+## RMSNorm vs LayerNorm
+
+**LayerNorm** (original Transformer):
+\`\`\`
+LayerNorm(x) = (x - μ) / √(σ² + ε) × γ + β
+\`\`\`
+
+**RMSNorm** (used by BitNet, LLaMA):
+\`\`\`
+RMSNorm(x) = x / √(mean(x²) + ε) × γ
+\`\`\`
+
+Key differences:
+- **No mean subtraction** — removes the re-centering step
+- **~15% faster** — one fewer reduction operation
+- **Equally effective** in practice for large Transformers
+- Only learnable parameter is the **scale γ** (no bias β)
+
+## Residual Connections: Gradient Highways
+
+Every sub-layer (attention, FFN) has a **residual connection** that adds the input to the output:
+
+\`\`\`
+output = x + SubLayer(x)
+\`\`\`
+
+Why this matters:
+- **Gradient highway:** Gradients flow directly through the addition, preventing vanishing gradients in deep models
+- **Identity baseline:** The model starts near the identity function and learns what to add
+- **Enables depth:** Without residuals, models beyond ~6 layers are nearly impossible to train
+
+## Pre-Norm vs Post-Norm
+
+**Post-Norm** (original Transformer):
+\`\`\`
+x = LayerNorm(x + Attention(x))
+\`\`\`
+
+**Pre-Norm** (BitNet, GPT, LLaMA):
+\`\`\`
+x = x + Attention(RMSNorm(x))
+\`\`\`
+
+Pre-norm is more **training stable** — the residual path is never normalized, so gradients flow cleanly. Most modern LLMs use pre-norm.
+
+## The Full Decoder Block
+
+\`\`\`
+┌─────────────────────────────────────────┐
+│  Input x                                │
+│    ↓                                    │
+│  RMSNorm → Multi-Head Attention → + x   │  ← residual
+│    ↓                                    │
+│  RMSNorm → Feed-Forward Network → + x   │  ← residual
+│    ↓                                    │
+│  Output (→ next block)                  │
+└─────────────────────────────────────────┘
+\`\`\`
+
+In BitNet, every **nn.Linear** inside this block (Q, K, V, O projections and FFN W1, W2) is replaced with **BitLinear** — the ternary quantized version.
+
+## Parameter Distribution: Where the Parameters Live
+
+~95% of LLM parameters are in \`nn.Linear\` layers:
+
+| Component | % of Params | Standard | BitNet |
+|-----------|------------|----------|--------|
+| Attention (Q,K,V,O) | ~33% | FP16 | **Ternary {-1,0,1}** |
+| FFN (W1, W2) | ~62% | FP16 | **Ternary {-1,0,1}** |
+| Embeddings | ~3.5% | FP16 | FP16 (kept) |
+| Norms | ~0.1% | FP32 | FP32 (kept) |
+| Output head | ~1.4% | FP16 | FP16 (kept) |
+
+## The Full Decoder-Only LLM
+
+A complete model like BitNet 2B4T stacks everything together:
+
+\`\`\`
+Token IDs
+  → Embedding (FP16) + Positional Encoding (RoPE)
+  → 30 × Decoder Block (with BitLinear)
+  → Final RMSNorm
+  → Output Head (FP16, weight-tied with embedding)
+  → Logits → Softmax → Next token
+\`\`\`
+
+BitNet 2B4T specifics: 2.4B params, 30 layers, hidden_dim=2560, 20 Q heads (5 KV heads via GQA), FFN_dim=6912, context=4096.
 `;
 
 const MOD_03_CONTENT = `## Quantization: The Bridge to 1-Bit
@@ -589,16 +774,17 @@ export const COURSE: Course = {
         },
       ],
     },
+    // === Module 2a: Attention Mechanism ===
     {
-      id: "mod-02",
-      number: 2,
-      title: "Transformer Architecture",
+      id: "mod-02a",
+      number: "2a",
+      title: "Attention Mechanism",
       description:
-        "Attention mechanism, multi-head attention, feed-forward networks, and the full decoder-only LLM.",
-      content: MOD_02_CONTENT,
+        "Q/K/V intuition, scaled dot-product formula, self-attention projections, and a worked numerical example.",
+      content: MOD_02A_CONTENT,
       exercises: [
         {
-          id: "ex-02-1",
+          id: "ex-02a-1",
           title: "Attention Formula",
           description: "The core of the Transformer",
           type: "multiple-choice",
@@ -615,7 +801,127 @@ export const COURSE: Course = {
             "Scaled dot-product attention: compute similarity scores (Q×K^T), scale by √d_k to prevent vanishing gradients in softmax, then weight the values V.",
         },
         {
-          id: "ex-02-2",
+          id: "ex-02a-2",
+          title: "Why Scale by √d_k?",
+          description: "Understanding the scaling factor",
+          type: "multiple-choice",
+          question:
+            "Why does the attention formula divide by √d_k before applying softmax?",
+          options: [
+            "To normalize the output to unit length",
+            "To prevent dot products from growing too large, which would push softmax into regions with vanishing gradients",
+            "To reduce computational cost",
+            "To make Q and K the same size",
+          ],
+          correctAnswer:
+            "To prevent dot products from growing too large, which would push softmax into regions with vanishing gradients",
+          explanation:
+            "When d_k is large, dot products grow in magnitude. Large inputs to softmax produce near-one-hot outputs where gradients are tiny. Dividing by √d_k keeps values in a range where softmax produces useful gradient signals.",
+        },
+      ],
+      resources: [
+        {
+          id: "res-02a-1",
+          title: "Attention Is All You Need (Original Paper)",
+          type: "pdf",
+          url: "https://arxiv.org/pdf/1706.03762",
+        },
+        {
+          id: "res-02a-2",
+          title: "The Illustrated Transformer",
+          type: "link",
+          url: "https://jalammar.github.io/illustrated-transformer/",
+        },
+      ],
+    },
+    // === Module 2b: Multi-Head Attention & FFN ===
+    {
+      id: "mod-02b",
+      number: "2b",
+      title: "Multi-Head Attention & FFN",
+      description:
+        "Multiple heads, Grouped-Query Attention, the FFN expand-activate-project pipeline, and Squared ReLU.",
+      content: MOD_02B_CONTENT,
+      exercises: [
+        {
+          id: "ex-02b-1",
+          title: "Grouped-Query Attention",
+          description: "How BitNet 2B4T saves attention parameters",
+          type: "multiple-choice",
+          question:
+            "In BitNet 2B4T's Grouped-Query Attention, how are the 20 query heads and 5 KV heads organized?",
+          options: [
+            "Each KV head serves 1 query head, 15 query heads have no KV",
+            "Every 4 query heads share 1 KV head",
+            "All 20 query heads share the same 5 KV heads randomly",
+            "The 5 KV heads are only used during training",
+          ],
+          correctAnswer: "Every 4 query heads share 1 KV head",
+          explanation:
+            "In GQA, query heads are evenly divided into groups. With 20 Q heads and 5 KV heads, each group of 4 Q heads shares one KV head. This gives 50% fewer attention parameters with minimal quality loss.",
+        },
+        {
+          id: "ex-02b-2",
+          title: "BitNet Activation Function",
+          description: "What activation does BitNet use?",
+          type: "multiple-choice",
+          question:
+            "What activation function does BitNet b1.58 use in the FFN layers, and why?",
+          options: [
+            "ReLU — it's the simplest and fastest",
+            "GELU — it's smoother than ReLU",
+            "Squared ReLU (ReLU(x)²) — its sparsity complements ternary weights",
+            "Sigmoid — it bounds outputs between 0 and 1",
+          ],
+          correctAnswer: "Squared ReLU (ReLU(x)²) — its sparsity complements ternary weights",
+          explanation:
+            "BitNet uses Squared ReLU which produces sparser activations. Squaring makes small positive values even smaller (effectively zero), and this sparsity pairs well with ternary weights — more computations can be skipped entirely.",
+        },
+      ],
+      resources: [
+        {
+          id: "res-02b-1",
+          title: "GQA: Training Generalized Multi-Query Transformer Models",
+          type: "pdf",
+          url: "https://arxiv.org/pdf/2305.13245",
+        },
+        {
+          id: "res-02b-2",
+          title: "Andrej Karpathy — Let's Build GPT",
+          type: "video",
+          url: "https://www.youtube.com/watch?v=kCc8FmEb1nY",
+        },
+      ],
+    },
+    // === Module 2c: The Complete Transformer Block ===
+    {
+      id: "mod-02c",
+      number: "2c",
+      title: "The Complete Transformer Block",
+      description:
+        "RMSNorm, residual connections, pre-norm architecture, full block diagram, and parameter distribution.",
+      content: MOD_02C_CONTENT,
+      exercises: [
+        {
+          id: "ex-02c-1",
+          title: "RMSNorm Advantage",
+          description: "Why BitNet uses RMSNorm over LayerNorm",
+          type: "multiple-choice",
+          question:
+            "What is the key simplification of RMSNorm compared to LayerNorm?",
+          options: [
+            "RMSNorm uses fewer parameters by removing the bias term",
+            "RMSNorm skips the mean subtraction step, making it ~15% faster",
+            "RMSNorm normalizes across the batch dimension instead of the feature dimension",
+            "RMSNorm uses integer arithmetic only",
+          ],
+          correctAnswer:
+            "RMSNorm skips the mean subtraction step, making it ~15% faster",
+          explanation:
+            "RMSNorm computes x / √(mean(x²) + ε) × γ — it normalizes by the root mean square without first centering by subtracting the mean. This saves one reduction operation per normalization, making it ~15% faster while being equally effective in practice.",
+        },
+        {
+          id: "ex-02c-2",
           title: "BitNet and Linear Layers",
           description: "Where BitNet makes changes",
           type: "multiple-choice",
@@ -630,44 +936,21 @@ export const COURSE: Course = {
           correctAnswer:
             "All nn.Linear layers inside transformer blocks (Q,K,V,O projections and FFN)",
           explanation:
-            "BitNet replaces nn.Linear with BitLinear in transformer blocks. Embeddings, output head, and normalization layers remain in full precision.",
-        },
-        {
-          id: "ex-02-3",
-          title: "BitNet Activation Function",
-          description: "What activation does BitNet use?",
-          type: "multiple-choice",
-          question:
-            "What activation function does BitNet b1.58 use in the FFN layers?",
-          options: [
-            "ReLU",
-            "GELU",
-            "Squared ReLU (ReLU(x)²)",
-            "Sigmoid",
-          ],
-          correctAnswer: "Squared ReLU (ReLU(x)²)",
-          explanation:
-            "BitNet uses Squared ReLU which produces sparser activations that work well with ternary weights. It zeros out negative values and squares positive ones.",
+            "BitNet replaces nn.Linear with BitLinear in transformer blocks (~95% of parameters). Embeddings, output head, and normalization layers remain in full precision — they're too small to benefit much from quantization.",
         },
       ],
       resources: [
         {
-          id: "res-02-1",
-          title: "Attention Is All You Need (Original Paper)",
+          id: "res-02c-1",
+          title: "Root Mean Square Layer Normalization (RMSNorm Paper)",
           type: "pdf",
-          url: "https://arxiv.org/pdf/1706.03762",
+          url: "https://arxiv.org/pdf/1910.07467",
         },
         {
-          id: "res-02-2",
+          id: "res-02c-2",
           title: "The Illustrated Transformer",
           type: "link",
           url: "https://jalammar.github.io/illustrated-transformer/",
-        },
-        {
-          id: "res-02-3",
-          title: "Andrej Karpathy — Let's Build GPT",
-          type: "video",
-          url: "https://www.youtube.com/watch?v=kCc8FmEb1nY",
         },
       ],
     },

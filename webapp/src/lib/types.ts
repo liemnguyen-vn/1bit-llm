@@ -1,6 +1,6 @@
 export interface Module {
   id: string;
-  number: number;
+  number: number | string;
   title: string;
   description: string;
   content: string; // markdown content

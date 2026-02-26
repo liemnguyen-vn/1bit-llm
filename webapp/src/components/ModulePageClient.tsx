@@ -7,6 +7,7 @@ import Markdown from "@/components/Markdown";
 import ExerciseRunner from "@/components/ExerciseRunner";
 import ResourceList from "@/components/ResourceList";
 import ExportImport from "@/components/ExportImport";
+import AnimationSection from "@/components/AnimationSection";
 import Link from "next/link";
 
 type Tab = "learn" | "exercises" | "resources" | "notes";
@@ -180,6 +181,7 @@ export default function ModulePageClient({
         {/* Tab Content */}
         {tab === "learn" && (
           <div className="max-w-3xl">
+            <AnimationSection moduleId={moduleId} />
             <Markdown content={mod.content} />
           </div>
         )}
